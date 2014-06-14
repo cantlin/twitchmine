@@ -9,14 +9,20 @@ CONF = YAML.load_file 'conf.yml'
 Thread.abort_on_exception = true
 
 class Twitch
+	def self.get_body url
+		req = Curl.get url
+		throw StandardError "Twitch API unhappy!" unless /2\d\d/.match(req.response_code.to_s)
+		req.body_str
+	end
+
 	def self.get_streams(game = nil)
-		req = Curl.get "https://api.twitch.tv/kraken/streams?game=#{URI.encode(game)}&limit=30"
-		JSON.parse(req.body_str)['streams']
+		body = self.get_body "https://api.twitch.tv/kraken/streams?app_contact=cantlin@ashrowan.com&game=#{URI.encode(game)}&limit=30"
+		JSON.parse(body)['streams']
 	end
 
 	def self.get_games
-		req = Curl.get "https://api.twitch.tv/kraken/games/top?limit=30"
-		JSON.parse(req.body_str)['top']
+		body = self.get_body "https://api.twitch.tv/kraken/games/top?app_contact=cantlin@ashrowan.com&limit=30"
+		JSON.parse(body)['top']
 	end
 end
 
@@ -105,6 +111,7 @@ class PersistentStore
 		"CREATE TABLE IF NOT EXISTS streams (
 		   stream_id int(11) NOT NULL,
 		   name varchar(255) NOT NULL,
+		   display_name varchar(255) NOT NULL,
 		   game_id int(11) NOT NULL,
 		  PRIMARY KEY (stream_id)
 		) ENGINE=InnoDB DEFAULT CHARSET=utf8",
@@ -134,10 +141,18 @@ puts "scrapin' :)"
 Thread.new do
 	while true do
 		mysql_client = Mysql2::Client.new CONF['database']
-		current_games = Twitch.get_games
+		begin
+			current_games = Twitch.get_games
+		rescue StandardError => e
+			puts "[#{Time.new.to_s}] Error retrieving viewers for top games", e.message, e.backtrace
+			sleep 300
+			next
+		end
+
+		start_time = Time.now
 
 		# Track any game in the top five, if we aren't already
-		Twitch.get_games[0..4].each do |game|
+		current_games[0..4].each do |game|
 			mysql_client.query(
 				"INSERT IGNORE INTO games (game_id, name) 
 				 VALUES (#{game['game']['_id']}, '#{game['game']['name']}')")
@@ -151,14 +166,13 @@ Thread.new do
 			current_data = current_games.find {|g| g['game']['_id'] == game['game_id']}
 			next if current_data.nil? # game dropped out of most viewed
 
-			puts "[#{Time.new.to_s}] game '#{game['name']}' has #{current_data['viewers']} viewers #{[";)", ":)", ":D"][rand(3)]}"
-
 			mysql_client.query(
 				"INSERT INTO game_viewer_history (game_id, viewers)
 				 VALUES (#{game['game_id']}, #{current_data['viewers']})")
 		end
 
-		sleep 900 # 15 minutes
+		puts "[#{Time.new.to_s}] Saved viewers for #{games_to_track.to_a.length} games in #{(Time.now - start_time).to_i}s (1 request)"
+		sleep 600 # 10 minutes
 	end
 end
 
@@ -166,15 +180,22 @@ Thread.new do
 	while true
 		mysql_client = Mysql2::Client.new CONF['database']
 		games = mysql_client.query("SELECT * FROM games")
+		start_time = Time.now
 
 		games.each do |game|
-			current_streams = Twitch.get_streams(game['name'])
+			begin
+				current_streams = Twitch.get_streams(game['name'])
+			rescue StandardError => e
+				puts "[#{Time.new.to_s}] Error retrieving streams for #{game['name']}", e.message, e.backtrace
+				sleep 300
+				next
+			end
 
 			# Track any stream in the top five, if we aren't already
 			current_streams[0..4].each do |stream|
 				mysql_client.query(
-					"INSERT IGNORE INTO streams (stream_id, name, game_id) 
-					 VALUES (#{stream['channel']['_id']}, '#{stream['channel']['name']}', #{game['game_id']})")
+					"INSERT IGNORE INTO streams (stream_id, name, display_name, game_id) 
+					 VALUES (#{stream['channel']['_id']}, '#{stream['channel']['name']}', '#{stream['channel']['display_name']}', #{game['game_id']})")
 			end
 
 			# Record viewers for all game streams
@@ -183,17 +204,16 @@ Thread.new do
 				current_data = current_streams.find {|s| s['channel']['_id'] == stream['stream_id']}
 				next if current_data.nil? # stream dropped out of most viewed
 
-				puts "[#{Time.new.to_s}] stream '#{stream['name']}' (playing #{game['name']}) has #{current_data['viewers']} viewers #{[";)", ":)", ":D"][rand(3)]}"
-
 				status = mysql_client.escape(current_data['channel']['status'])
 				mysql_client.query(
 					"INSERT INTO stream_viewer_history (stream_id, current_status, viewers)
 					 VALUES (#{stream['stream_id']}, '#{status}', #{current_data['viewers']})")
 			end
 
-			sleep 10
+			sleep 8
 		end
 
+		puts "[#{Time.new.to_s}] Saved viewers for all streams in #{(Time.now - start_time).to_i}s (#{games.to_a.length} requests)"
 		sleep 720 # 12 minutes
 	end
 end
@@ -202,7 +222,6 @@ def results_to_spreadsheet_array opts
 	raise ArgumentError unless opts.keys == [:cols, :rows, :key, :prop]
 
 	ranges = opts[:rows].group_by {|r| "#{r['date']} #{r['hour']}:00-#{r['hour']}:59"}
-	puts ranges.to_json
 
 	output = [["Date Range"]]
 	opts[:cols].each do |column|
