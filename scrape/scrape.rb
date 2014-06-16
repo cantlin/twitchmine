@@ -109,6 +109,7 @@ class PersistentStore
 		sql = ["CREATE TABLE IF NOT EXISTS games (
 		   game_id int(11) NOT NULL,
 		   name varchar(255) NOT NULL,
+		   record_streams int(1) NOT NULL DEFAULT 0,
 		  PRIMARY KEY (game_id)
 		) ENGINE=InnoDB DEFAULT CHARSET=utf8",
 		"CREATE TABLE IF NOT EXISTS streams (
@@ -177,14 +178,14 @@ Thread.new do
 
 		mysql_client.close
 		puts "[#{Time.new.to_s}] Saved viewers for #{games_to_track.to_a.length} games in #{(Time.now - start_time).to_i}s (1 request)"
-		sleep 600 # 10 minutes
+		sleep 600 # ten minutes
 	end
 end
 
 Thread.new do
 	while true
 		mysql_client = Mysql2::Client.new CONF['database']
-		games = mysql_client.query("SELECT * FROM games")
+		games = mysql_client.query("SELECT * FROM games WHERE record_streams = 1")
 		mysql_client.close
 		start_time = Time.now
 
@@ -220,11 +221,11 @@ Thread.new do
 			end
 
 			mysql_client.close
-			sleep 8
+			sleep 3
 		end
 
 		puts "[#{Time.new.to_s}] Saved viewers for all streams in #{(Time.now - start_time).to_i}s (#{games.to_a.length} requests)"
-		sleep 720 # 12 minutes
+		sleep 600
 	end
 end
 
