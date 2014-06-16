@@ -27,32 +27,35 @@ class Twitch
 end
 
 class PersistentStore
-	@client = nil
-
-	def self.client
-		return @client if @client
-
-		@client = Mysql2::Client.new CONF['database']
-	end
-
 	def self.query str
-		self.client.query str
+		begin
+			client = Mysql2::Client.new CONF['database']
+
+			begin
+				client.query str
+			rescue StandardError => e
+				puts "Query failed", str, e.message, e.backtrace
+				client.close
+			end
+		rescue StandardError => e
+			puts "Could not connect to database", e.message
+		end
 	end
 
 	def self.games
-		self.client.query("SELECT * FROM games")
+		self.query("SELECT * FROM games")
 	end
 
 	def self.streams game_id = nil
 		if game_id
-			self.client.query("SELECT * FROM streams WHERE game_id = #{game_id}")
+			self.query("SELECT * FROM streams WHERE game_id = #{game_id}")
 		else
-			self.client.query("SELECT * FROM streams")
+			self.query("SELECT * FROM streams")
 		end
 	end
 
 	def self.object_viewer_history object
-		self.client.query(
+		self.query(
 			"SELECT DATE(recorded_at) as date, HOUR(recorded_at) as hour, #{object}_id, ROUND(AVG(viewers)) as average_viewers 
 			FROM #{object}_viewer_history
 			GROUP BY #{object}_id, DATE(recorded_at), HOUR(recorded_at)"
@@ -60,7 +63,7 @@ class PersistentStore
 	end
 
 	def self.object_by_viewers object
-		self.client.query(
+		self.query(
 			"SELECT *, ROUND(AVG(vh.viewers)) as average_viewers FROM #{object}s
 			JOIN #{object}_viewer_history AS vh ON #{object}s.#{object}_id = vh.#{object}_id
 			GROUP BY #{object}s.#{object}_id ORDER BY average_viewers DESC"
@@ -73,7 +76,7 @@ class PersistentStore
 
 	def self.stream_viewer_history game_id = nil
 		if game_id
-			self.client.query(
+			self.query(
 				"SELECT DATE(recorded_at) as date, HOUR(recorded_at) as hour, svh.stream_id as stream_id, ROUND(AVG(viewers)) as average_viewers
 				FROM stream_viewer_history svh
 				JOIN streams ON svh.stream_id = streams.stream_id
@@ -91,7 +94,7 @@ class PersistentStore
 
 	def self.streams_by_viewers game_id = nil
 		if game_id
-			self.client.query(
+			self.query(
 				"SELECT *, ROUND(AVG(svh.viewers)) as average_viewers FROM streams
 				JOIN stream_viewer_history AS svh ON streams.stream_id = svh.stream_id
 				WHERE streams.game_id = #{game_id}
@@ -131,7 +134,7 @@ class PersistentStore
 		  PRIMARY KEY (history_id)
 		) ENGINE=InnoDB DEFAULT CHARSET=utf8"]
 
-		sql.each {|q| self.client.query(q) }
+		sql.each {|q| self.query(q) }
 	end
 end
 
@@ -140,7 +143,6 @@ puts "scrapin' :)"
 
 Thread.new do
 	while true do
-		mysql_client = Mysql2::Client.new CONF['database']
 		begin
 			current_games = Twitch.get_games
 		rescue StandardError => e
@@ -150,12 +152,14 @@ Thread.new do
 		end
 
 		start_time = Time.now
+		mysql_client = Mysql2::Client.new CONF['database']
 
 		# Track any game in the top five, if we aren't already
 		current_games[0..4].each do |game|
+			name = mysql_client.escape game['game']['name']
 			mysql_client.query(
 				"INSERT IGNORE INTO games (game_id, name) 
-				 VALUES (#{game['game']['_id']}, '#{game['game']['name']}')")
+				 VALUES (#{game['game']['_id']}, '#{name}')")
 		end
 
 		games_to_track = mysql_client.query("SELECT * FROM games")
@@ -171,6 +175,7 @@ Thread.new do
 				 VALUES (#{game['game_id']}, #{current_data['viewers']})")
 		end
 
+		mysql_client.close
 		puts "[#{Time.new.to_s}] Saved viewers for #{games_to_track.to_a.length} games in #{(Time.now - start_time).to_i}s (1 request)"
 		sleep 600 # 10 minutes
 	end
@@ -180,6 +185,7 @@ Thread.new do
 	while true
 		mysql_client = Mysql2::Client.new CONF['database']
 		games = mysql_client.query("SELECT * FROM games")
+		mysql_client.close
 		start_time = Time.now
 
 		games.each do |game|
@@ -191,11 +197,14 @@ Thread.new do
 				next
 			end
 
+			mysql_client = Mysql2::Client.new CONF['database']
+
 			# Track any stream in the top five, if we aren't already
 			current_streams[0..4].each do |stream|
+				name = mysql_client.escape stream['channel']['name']
 				mysql_client.query(
 					"INSERT IGNORE INTO streams (stream_id, name, display_name, game_id) 
-					 VALUES (#{stream['channel']['_id']}, '#{stream['channel']['name']}', '#{stream['channel']['display_name']}', #{game['game_id']})")
+					 VALUES (#{stream['channel']['_id']}, '#{name}', '#{stream['channel']['display_name']}', #{game['game_id']})")
 			end
 
 			# Record viewers for all game streams
@@ -210,6 +219,7 @@ Thread.new do
 					 VALUES (#{stream['stream_id']}, '#{status}', #{current_data['viewers']})")
 			end
 
+			mysql_client.close
 			sleep 8
 		end
 
@@ -247,16 +257,6 @@ get '/games/?' do
 	end.to_json
 end
 
-get '/streams/?' do
-	results = PersistentStore.streams
-	results.to_a.to_json
-end
-
-get '/streams/:game_id/?' do
-	results = PersistentStore.streams(params[:game_id])
-	results.to_a.to_json
-end
-
 get '/games/spreadsheet/?' do
 	results_to_spreadsheet_array(
 		cols: PersistentStore.games_by_viewers,
@@ -266,7 +266,12 @@ get '/games/spreadsheet/?' do
 	).to_json
 end
 
-get '/streams/spreadsheet' do
+get '/streams/?' do
+	results = PersistentStore.streams
+	results.to_a.to_json
+end
+
+get '/streams/spreadsheet/?' do
 	results_to_spreadsheet_array(
 		cols: PersistentStore.streams_by_viewers,
 		rows: PersistentStore.stream_viewer_history,
@@ -275,7 +280,12 @@ get '/streams/spreadsheet' do
 	).to_json
 end
 
-get '/streams/:game_id/spreadsheet/?' do
+get '/game/:game_id/streams/?' do
+	results = PersistentStore.streams(params[:game_id])
+	results.to_a.to_json
+end
+
+get '/game/:game_id/streams/spreadsheet/?' do
 	results_to_spreadsheet_array(
 		cols: PersistentStore.streams_by_viewers(params[:game_id]),
 		rows: PersistentStore.stream_viewer_history(params[:game_id]),
