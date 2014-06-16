@@ -252,8 +252,8 @@ before { content_type :json }
 
 get '/games/?' do
 	PersistentStore.games.map do |o|
-		o['streams_url'] = "http://#{request.host}:#{request.port}/streams/#{o['game_id']}"
-		o['streams_spreadsheet_url'] = "http://#{request.host}:#{request.port}/streams/#{o['game_id']}/spreadsheet"
+		o['streams_url'] = "http://#{request.host}:#{request.port}/game/#{o['game_id']}/streams"
+		o['streams_spreadsheet_url'] = "http://#{request.host}:#{request.port}/game/#{o['game_id']}/streams/spreadsheet"
 		o
 	end.to_json
 end
