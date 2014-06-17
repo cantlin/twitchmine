@@ -11,7 +11,7 @@ Thread.abort_on_exception = true
 class Twitch
 	def self.get_body url
 		req = Curl.get url
-		throw StandardError.new("Twitch API unhappy!") unless /2\d\d/.match(req.response_code.to_s)
+		throw StandardError.new("Twitch API unhappy! (returned #{req.response_code})") unless /2\d\d/.match(req.response_code.to_s)
 		req.body_str
 	end
 
