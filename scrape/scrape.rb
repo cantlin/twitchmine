@@ -32,7 +32,7 @@ class PersistentStore
 			client = Mysql2::Client.new CONF['database']
 
 			begin
-				client.query str
+				client.query(str)
 			rescue StandardError => e
 				puts "Query failed", str, e.message, e.backtrace
 				client.close
@@ -58,7 +58,8 @@ class PersistentStore
 		self.query(
 			"SELECT DATE(recorded_at) as date, HOUR(recorded_at) as hour, #{object}_id, ROUND(AVG(viewers)) as average_viewers 
 			FROM #{object}_viewer_history
-			GROUP BY #{object}_id, DATE(recorded_at), HOUR(recorded_at)"
+			GROUP BY #{object}_id, DATE(recorded_at), HOUR(recorded_at)
+			ORDER BY recorded_at"
 		)
 	end
 
@@ -81,7 +82,8 @@ class PersistentStore
 				FROM stream_viewer_history svh
 				JOIN streams ON svh.stream_id = streams.stream_id
 				WHERE streams.game_id = #{game_id}
-				GROUP BY svh.stream_id, DATE(recorded_at), HOUR(recorded_at)"
+				GROUP BY svh.stream_id, DATE(recorded_at), HOUR(recorded_at)
+				ORDER BY recorded_at"
 			)
 		else
 			self.object_viewer_history "stream"
@@ -135,7 +137,7 @@ class PersistentStore
 		  PRIMARY KEY (history_id)
 		) ENGINE=InnoDB DEFAULT CHARSET=utf8"]
 
-		sql.each {|q| self.query(q) }
+		sql.each {|q| self.query q }
 	end
 end
 
@@ -178,7 +180,7 @@ Thread.new do
 
 		mysql_client.close
 		puts "[#{Time.new.to_s}] Saved viewers for #{games_to_track.to_a.length} games in #{(Time.now - start_time).to_i}s (1 request)"
-		sleep 600 # ten minutes
+		sleep 900 # ten minutes
 	end
 end
 
@@ -225,14 +227,14 @@ Thread.new do
 		end
 
 		puts "[#{Time.new.to_s}] Saved viewers for all streams in #{(Time.now - start_time).to_i}s (#{games.to_a.length} requests)"
-		sleep 600
+		sleep 900
 	end
 end
 
 def results_to_spreadsheet_array opts
 	raise ArgumentError unless opts.keys == [:cols, :rows, :key, :prop]
 
-	ranges = opts[:rows].group_by {|r| "#{r['date']} #{r['hour']}:00-#{r['hour']}:59"}
+	ranges = opts[:rows].group_by {|r| "#{r['date']} #{r['hour'] + 1}:00"}
 
 	output = [["Date Range"]]
 	opts[:cols].each do |column|
