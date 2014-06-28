@@ -127,7 +127,7 @@ streams_poll = Poller.new("streams", poll_frequency) do |logger|
 	recording_streams.compact!
 
 	streams_to_start.each do |s|
-		filename = "#{s['channel']['name']}.mp4"
+		filename = "#{s['channel']['name']}_#{Time.now.strftime '%d_%m_%Y_%H_%M_%S'}.mp4"
 		s['__pid'] = fork do
 			command = "livestreamer twitch.tv/#{s['channel']['name']} best -o #{filename} -f -Q"
 			logger.log("[#{Process.pid}] Executing: '#{command}'")
