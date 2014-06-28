@@ -3,10 +3,16 @@ require 'json'
 require 'uri'
 require 'curb'
 require 'filesize'
+require 'trollop'
+
+CONF = Trollop::options do
+	opt :output_directory, "Output directory", :default => "#{Dir.home}/", :type => :string, :short => "-o"
+	opt :viewer_threshold, "Viewer threshold", :default => 50000, :type => :integer, :short => "-t"
+end
 
 Thread.abort_on_exception = true
 poll_frequency = 30 # seconds
-gold_threshold = 25000
+viewer_threshold = CONF[:viewer_threshold]
 
 class Logger
 	attr_accessor :prefix
@@ -100,14 +106,14 @@ recording_streams = []
 last_refresh = DateTime.now
 
 streams_poll = Poller.new("streams", poll_frequency) do |logger|
-	logger.log("Viewer threshold is #{gold_threshold}")
+	logger.log("Viewer threshold is #{viewer_threshold}")
 	begin
 		latest_streams = Twitch.get_streams('Dota 2')
 	rescue StandardError => e
 		logger.log "Failed to retreive streams (#{e.to_s})"
 	end
 	
-	eligible_streams = latest_streams.select {|s| s['viewers'].to_i >= gold_threshold}
+	eligible_streams = latest_streams.select {|s| s['viewers'].to_i >= viewer_threshold}
 	logger.log("Found #{latest_streams.length} streams (highest viewers #{latest_streams[0]['viewers']}) (#{eligible_streams.length} eligible)")
 
 	eligible_ids  = eligible_streams.map {|s| s['_id']}
@@ -127,7 +133,7 @@ streams_poll = Poller.new("streams", poll_frequency) do |logger|
 	recording_streams.compact!
 
 	streams_to_start.each do |s|
-		filename = "#{s['channel']['name']}_#{Time.now.strftime '%d_%m_%Y_%H_%M_%S'}.mp4"
+		filename = "#{CONF[:output_directory]}#{s['channel']['name']}_#{Time.now.strftime '%d_%m_%Y_%H_%M_%S'}.mp4"
 		s['__pid'] = fork do
 			command = "livestreamer twitch.tv/#{s['channel']['name']} best -o #{filename} -f -Q"
 			logger.log("[#{Process.pid}] Executing: '#{command}'")
@@ -154,7 +160,7 @@ end
 get '/' do
 	o  = "<meta http-equiv=\"refresh\" content=\"10\"><title>twitchmine</title>"
 	o += "<h1>twitchmine</h1>"
-	o += "<p>Viewer threshold: <b>#{gold_threshold}</b> (<a target=\"_blank\" href=\"/set_threshold/#{gold_threshold - 1000}\">-</a> | <a target=\"_blank\" href=\"/set_threshold/#{gold_threshold + 1000}\">+</a>)<br />"
+	o += "<p>Viewer threshold: <b>#{viewer_threshold}</b> (<a target=\"_blank\" href=\"/set_threshold/#{viewer_threshold - 1000}\">-</a> | <a target=\"_blank\" href=\"/set_threshold/#{viewer_threshold + 1000}\">+</a>)<br />"
 	o += "Poll interval: <b>#{poll_frequency}</b></br>"
 	o += "Last refresh: <b>#{last_refresh.to_s}</b></p>"
 	o += "<h2>Currently recording</h2>"
@@ -185,8 +191,8 @@ get '/' do
 end
 
 get '/set_threshold/:input' do
-	gold_threshold = params[:input].to_i
-	logger.log("Viewer threshold was manually set to #{gold_threshold}")
+	viewer_threshold = params[:input].to_i
+	logger.log("Viewer threshold was manually set to #{viewer_threshold}")
 end
 
 get '/recorder/kill/:id' do
