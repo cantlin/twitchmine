@@ -65,9 +65,9 @@ class PersistentStore
 
 	def self.object_by_viewers object
 		self.query(
-			"SELECT *, ROUND(AVG(vh.viewers)) as average_viewers FROM #{object}s
+			"SELECT *, SUM(vh.viewers) as viewers FROM #{object}s
 			JOIN #{object}_viewer_history AS vh ON #{object}s.#{object}_id = vh.#{object}_id
-			GROUP BY #{object}s.#{object}_id ORDER BY average_viewers DESC"
+			GROUP BY #{object}s.#{object}_id ORDER BY viewers DESC"
 		)
 	end
 
@@ -97,10 +97,10 @@ class PersistentStore
 	def self.streams_by_viewers game_id = nil
 		if game_id
 			self.query(
-				"SELECT *, ROUND(AVG(svh.viewers)) as average_viewers FROM streams
+				"SELECT *, SUM(svh.viewers) as viewers FROM streams
 				JOIN stream_viewer_history AS svh ON streams.stream_id = svh.stream_id
 				WHERE streams.game_id = #{game_id}
-				GROUP BY streams.stream_id ORDER BY average_viewers DESC"
+				GROUP BY streams.stream_id ORDER BY viewers DESC"
 			)
 		else
 			self.object_by_viwers "stream"
