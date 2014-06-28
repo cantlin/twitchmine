@@ -27,18 +27,49 @@ class Twitch
 end
 
 class PersistentStore
-	def self.query str
+	def self.with_connection
 		begin
 			client = Mysql2::Client.new CONF['database']
 
-			begin
-				client.query(str)
-			rescue StandardError => e
-				puts "Query failed", str, e.message, e.backtrace
-				client.close
-			end
+			yield(client)
+
+			client.close if client
 		rescue StandardError => e
 			puts "Could not connect to database", e.message
+		end
+	end
+
+	def self.query q
+		self.with_connection |client|
+			begin
+				client.query q
+			rescue StandardError => e
+				puts "Query failed", q, e.message, e.backtrace
+			ensure
+				client.close
+			end
+		end
+	end
+
+	def self.batch queries, throw_on_error = false
+		self.with_connection |client|
+			results = queries.map do |q|
+				begin
+					client.query q
+				rescue StandardError => e
+					puts "Query failed", str, e.message, e.backtrace
+
+					if throw_on_error
+						client.close
+						throw e
+					else
+						false
+					end
+				end
+			end
+
+			client.close
+			results
 		end
 	end
 
@@ -155,30 +186,28 @@ Thread.new do
 		end
 
 		start_time = Time.now
-		mysql_client = Mysql2::Client.new CONF['database']
 
 		# Track any game in the top five, if we aren't already
-		current_games[0..4].each do |game|
+		PersistentStore.batch current_games[0..4].map do |game|
 			name = mysql_client.escape game['game']['name']
-			mysql_client.query(
-				"INSERT IGNORE INTO games (game_id, name) 
-				 VALUES (#{game['game']['_id']}, '#{name}')")
+			"INSERT IGNORE INTO games (game_id, name) 
+			 VALUES (#{game['game']['_id']}, '#{name}')"
 		end
 
-		games_to_track = mysql_client.query("SELECT * FROM games")
+		games_to_track = PersistentStore.query("SELECT * FROM games")
 
 		# For all games we're tracking, try and find the number
 		# of viewers from the Twitch response and record it
+		insert_queries = []
 		games_to_track.each do |game|
 			current_data = current_games.find {|g| g['game']['_id'] == game['game_id']}
 			next if current_data.nil? # game dropped out of most viewed
 
-			mysql_client.query(
-				"INSERT INTO game_viewer_history (game_id, viewers)
-				 VALUES (#{game['game_id']}, #{current_data['viewers']})")
+			insert_queries.push("INSERT INTO game_viewer_history (game_id, viewers)
+			VALUES (#{game['game_id']}, #{current_data['viewers']})")
 		end
+		PersistentStore.batch insert_queries
 
-		mysql_client.close
 		puts "[#{Time.new.to_s}] Saved viewers for #{games_to_track.to_a.length} games in #{(Time.now - start_time).to_i}s (1 request)"
 		sleep 900 # ten minutes
 	end
@@ -186,9 +215,7 @@ end
 
 Thread.new do
 	while true
-		mysql_client = Mysql2::Client.new CONF['database']
-		games = mysql_client.query("SELECT * FROM games WHERE record_streams = 1")
-		mysql_client.close
+		games = PersistentStore.query("SELECT * FROM games WHERE record_streams = 1")
 		start_time = Time.now
 
 		games.each do |game|
@@ -200,29 +227,25 @@ Thread.new do
 				next
 			end
 
-			mysql_client = Mysql2::Client.new CONF['database']
-
 			# Track any stream in the top five, if we aren't already
-			current_streams[0..4].each do |stream|
+			PersistentStore.batch current_streams[0..4].map do |stream|
 				name = mysql_client.escape stream['channel']['name']
-				mysql_client.query(
-					"INSERT IGNORE INTO streams (stream_id, name, display_name, game_id) 
-					 VALUES (#{stream['channel']['_id']}, '#{name}', '#{stream['channel']['display_name']}', #{game['game_id']})")
+				"INSERT IGNORE INTO streams (stream_id, name, display_name, game_id) 
+				 VALUES (#{stream['channel']['_id']}, '#{name}', '#{stream['channel']['display_name']}', #{game['game_id']})")
 			end
 
 			# Record viewers for all game streams
-			streams = mysql_client.query("SELECT * FROM streams WHERE game_id = #{game['game_id']}")
+			streams = PersistentStore.query("SELECT * FROM streams WHERE game_id = #{game['game_id']}")
+			insert_queries = []
 			streams.each do |stream|
 				current_data = current_streams.find {|s| s['channel']['_id'] == stream['stream_id']}
 				next if current_data.nil? # stream dropped out of most viewed
 
 				status = mysql_client.escape(current_data['channel']['status'])
-				mysql_client.query(
-					"INSERT INTO stream_viewer_history (stream_id, current_status, viewers)
-					 VALUES (#{stream['stream_id']}, '#{status}', #{current_data['viewers']})")
+				insert_queries.push("INSERT INTO stream_viewer_history (stream_id, current_status, viewers) 
+				VALUES (#{stream['stream_id']}, '#{status}', #{current_data['viewers']})")
 			end
-
-			mysql_client.close
+			PersistentStore.batch insert_queries
 			sleep 3
 		end
 
