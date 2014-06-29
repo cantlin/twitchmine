@@ -31,7 +31,9 @@ class PersistentStore
 		begin
 			client = Mysql2::Client.new CONF['database']
 
-			yield client
+			return_val = yield(client)
+			client.close if client
+			return_val
 		rescue StandardError => e
 			puts "Could not connect to database", e.message
 			[]
